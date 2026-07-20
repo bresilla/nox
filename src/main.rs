@@ -1,20 +1,18 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
 mod agent;
-mod edit;
 mod facts;
-mod generate;
 mod install;
 mod nix_ast;
 mod repo;
 mod report;
 mod sops;
 mod storage_cli;
-mod ui;
+
 mod yubikey_probe;
 
 type Result<T> = std::result::Result<T, String>;
@@ -36,36 +34,6 @@ fn run() -> Result<u8> {
         CommandName::Install => {
             let repo = repo::find()?;
             crate::install::ui::run(&repo, true)
-        }
-        CommandName::Generate(args) => {
-            let repo = repo::find()?;
-            generate::dispatch(
-                &repo,
-                generate::Options {
-                    role: args.role,
-                    check_only: args.check_only,
-                },
-            )
-        }
-        CommandName::Check(args) => {
-            let repo = repo::find()?;
-            generate::dispatch(
-                &repo,
-                generate::Options {
-                    role: args.role,
-                    check_only: true,
-                },
-            )
-        }
-        CommandName::Edit => {
-            let repo = repo::find()?;
-            edit::dispatch(&repo)
-        }
-        CommandName::Status => {
-            let repo = repo::find()?;
-            let mut command = Command::new("git");
-            command.current_dir(&repo).arg("status").arg("--short");
-            exec_status(&mut command)
         }
         CommandName::Agent => agent::run_stdio(),
         CommandName::AgentPing => agent_ping_dispatch(),
@@ -163,7 +131,7 @@ fn run() -> Result<u8> {
 }
 
 #[derive(Parser)]
-#[command(name = "nox", version, about = "NixOS repo control tool")]
+#[command(name = "nox", version, about = "declarative Linux installer — emits LIS, applies NixOS")]
 struct Cli {
     #[command(subcommand)]
     command: CommandName,
@@ -173,18 +141,6 @@ struct Cli {
 enum CommandName {
     /// Run the clean installer.
     Install,
-    /// Apply this system flake.
-    #[command(hide = true)]
-    Generate(GenerateArgs),
-    /// Validate the current role.
-    #[command(hide = true)]
-    Check(CheckArgs),
-    /// Pick a file to edit.
-    #[command(hide = true)]
-    Edit,
-    /// Show git status.
-    #[command(hide = true)]
-    Status,
     /// Run remote-side nx agent over framed stdin/stdout.
     #[command(hide = true)]
     Agent,
@@ -282,20 +238,6 @@ enum CommandName {
     },
 }
 
-
-#[derive(Args)]
-struct GenerateArgs {
-    #[arg(long, value_parser = ["laptop", "server"])]
-    role: Option<String>,
-    #[arg(long)]
-    check_only: bool,
-}
-
-#[derive(Args)]
-struct CheckArgs {
-    #[arg(long, value_parser = ["laptop", "server"])]
-    role: Option<String>,
-}
 
 #[derive(Args)]
 struct NixParseArgs {
@@ -550,13 +492,6 @@ struct StorageApplyArgs {
     confirm_destructive_target: Option<String>,
     #[arg(long)]
     max_destructive_steps: Option<usize>,
-}
-
-fn exec_status(command: &mut Command) -> Result<u8> {
-    let status = command
-        .status()
-        .map_err(|err| format!("failed to run {:?}: {err}", command.get_program()))?;
-    Ok(status.code().unwrap_or(1) as u8)
 }
 
 fn nix_parse_dispatch(path: &Path) -> Result<u8> {

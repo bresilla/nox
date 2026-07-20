@@ -121,10 +121,16 @@ fn walk(
     Ok(())
 }
 
+/// Write-side sops primitive; the interactive editor that used it was
+/// removed with the nx tool, kept for future programmatic secret writes.
+#[allow(dead_code)]
 pub fn is_encrypted_value(value: &str) -> Result<bool> {
     Ok(encrypted_value_regex()?.is_match(value))
 }
 
+/// Thin public wrapper kept for tests and future callers; check_file uses
+/// the internal regex-carrying variant.
+#[allow(dead_code)]
 pub fn decrypt_sops_value(value: &str, key: &[u8], aad: &str) -> Result<Vec<u8>> {
     decrypt_sops_value_with_regex(value, key, aad, &encrypted_value_regex()?)
 }
@@ -157,6 +163,9 @@ fn decrypt_sops_value_with_regex(
         .map_err(|_| format!("failed to decrypt SOPS value at aad '{aad}'"))
 }
 
+/// Write-side sops primitive; the interactive editor that used it was
+/// removed with the nx tool, kept for future programmatic secret writes.
+#[allow(dead_code)]
 pub fn encrypt_sops_value(plaintext: &Value, key: &[u8], aad: &str) -> Result<Option<String>> {
     let Some((plain_bytes, kind)) = yaml_plain_value(plaintext)? else {
         return Ok(None);
@@ -164,6 +173,9 @@ pub fn encrypt_sops_value(plaintext: &Value, key: &[u8], aad: &str) -> Result<Op
     encrypt_sops_bytes(&plain_bytes, kind, key, aad).map(Some)
 }
 
+/// Write-side sops primitive; the interactive editor that used it was
+/// removed with the nx tool, kept for future programmatic secret writes.
+#[allow(dead_code)]
 pub fn encrypt_sops_bytes(plaintext: &[u8], kind: &str, key: &[u8], aad: &str) -> Result<String> {
     if key.len() != 32 {
         return Err(format!("SOPS data key is {} bytes; expected 32", key.len()));
@@ -310,6 +322,9 @@ fn optional_regex(value: &Value, key: &str) -> Result<Option<Regex>> {
         .transpose()
 }
 
+/// Write-side sops primitive; the interactive editor that used it was
+/// removed with the nx tool, kept for future programmatic secret writes.
+#[allow(dead_code)]
 pub fn mac_for_plain_value(value: &Value, rules: &CryptRules) -> Result<String> {
     let mut mac = Sha512::new();
     if rules.mac_only_encrypted {
@@ -319,6 +334,9 @@ pub fn mac_for_plain_value(value: &Value, rules: &CryptRules) -> Result<String> 
     Ok(hex_upper(&mac.finalize()))
 }
 
+/// Write-side sops primitive; the interactive editor that used it was
+/// removed with the nx tool, kept for future programmatic secret writes.
+#[allow(dead_code)]
 fn walk_plain_mac(
     value: &Value,
     rules: &CryptRules,
