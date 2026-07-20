@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   release:
-    name: release nox-linux-amd64 (static)
+    name: release static nox binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,8 +17,12 @@ jobs:
       - name: Build static binary
         run: |
           nix build .#nox-static --print-out-paths
+          # `nox` is what install.sh fetches; keep an arch-named copy too.
+          cp result/bin/nox nox
           cp result/bin/nox nox-linux-amd64
-      - name: Upload release asset
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: nox-linux-amd64
+          files: |
+            nox
+            nox-linux-amd64
