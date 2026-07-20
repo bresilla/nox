@@ -11,38 +11,32 @@ use crate::install::disk::DiskPrepareResult;
 use crate::install::executor::{RemoteExecutionPolicy, RemoteInstallExecution};
 use crate::install::remote::RemoteInstallSession;
 use crate::install::state::{validate_mountpoint, InstallScope, InstallState};
-use crate::nix_ast;
+
 use crate::Result;
 
 const REMOTE_SOURCE_DIR: &str = "/tmp/nx-source";
 
 pub fn prepare_generated(repo: &Path, state: &InstallState) -> Result<()> {
     validate_state(state)?;
-    // nox produces LIS; the nix files are translations OF the document. The
-    // implicit whole-disk default layout is made explicit first so the
-    // document fully describes the machine.
+    // nox emits ONE artifact: the LIS document. The config repo translates it
+    // to Nix at evaluation time (host/lis/). The implicit whole-disk default
+    // layout is made explicit first so the document fully describes the
+    // machine.
     let mut source = state.clone();
     source.materialize_default_slices();
     let doc = crate::install::lis::from_state(&source);
-    crate::install::lis::write_document(repo, &doc)?;
-    // The opinionated translator (this flake's modules) consumes the document.
-    let gen_state = crate::install::lis::state_from(&doc);
-    crate::install::disko::write(repo, &gen_state)?;
-    crate::install::storage_plan::write(repo, &gen_state)?;
-    write_host(repo, &gen_state)?;
-    write_user(repo, &gen_state)?;
-
-    for file in generated_nix_files(repo) {
-        let report = nix_ast::parse_file(&file)?;
-        if !report.is_ok() {
-            return Err(format!(
-                "generated file {} has Nix parse errors: {}",
-                file.display(),
-                report.errors.join("; ")
-            ));
-        }
+    let issues = lis::validate(&doc);
+    if !issues.is_empty() {
+        return Err(format!(
+            "emitted LIS document is invalid: {}",
+            issues
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
     }
-    Ok(())
+    crate::install::lis::write_document(repo, &doc)
 }
 
 /// Run the confirmed install, reporting every event through `reporter`. The CLI
@@ -397,152 +391,6 @@ fn validate_state(state: &InstallState) -> Result<()> {
     Ok(())
 }
 
-fn write_host(repo: &Path, state: &InstallState) -> Result<()> {
-    validate_hostname(&state.hostname)?;
-    let file = repo.join("host/generated/host.nix");
-    // The secrets decision is always written out explicitly. `false` turns the
-    // whole sops layer off on the target (host/modules/secrets.nix is mkIf'd
-    // on this) so it activates cleanly with no age key; place
-    // /var/lib/sops-nix/key.txt and flip it back to re-enable everything.
-    let secrets_line = if state.secrets_mode == crate::install::state::SecretsMode::Skip {
-        "\n  bresilla.secrets.enable = false;\n"
-    } else {
-        "\n  bresilla.secrets.enable = true;\n"
-    };
-    write_file(
-        &file,
-        &format!(
-            r#"{{
-  lib,
-  modulesPath,
-  ...
-}}:
-
-{{
-  imports = [
-    (modulesPath + "/installer/scan/not-detected.nix")
-  ];
-
-  networking.hostName = lib.mkDefault "{}";
-  time.timeZone = lib.mkDefault "{}";
-{}
-  bresilla.features.system.architecture = lib.mkDefault "unknown";
-  bresilla.features.system.cpuVendor = lib.mkDefault "unknown";
-
-  boot.loader.systemd-boot.enable = lib.mkDefault true;
-  boot.loader.efi = {{
-    canTouchEfiVariables = lib.mkDefault true;
-    efiSysMountPoint = lib.mkDefault "/boot/efi";
-  }};
-}}
-"#,
-            state.hostname, state.timezone, secrets_line
-        ),
-    )
-}
-
-/// Runtime path for a given account's hashed password file.
-pub(crate) fn user_password_hash_target(username: &str) -> String {
-    format!("/var/lib/nixos-install/passwd-{username}.hash")
-}
-
-fn write_user(repo: &Path, state: &InstallState) -> Result<()> {
-    let users = if state.users.is_empty() {
-        // Fall back to the legacy single-user fields for non-TUI callers.
-        vec![crate::install::state::UserAccount {
-            name: state.install_user.clone(),
-            password_hash: state.user_password_hash.clone(),
-            dotfiles: state.dotfiles_repo.clone(),
-            groups: crate::install::state::default_user_groups(),
-        }]
-    } else {
-        state.users.clone()
-    };
-    for user in &users {
-        validate_username(&user.name)?;
-    }
-    let primary = &users[0];
-
-    let hashed_password_file = if primary.password_hash.is_some() {
-        format!(
-            "lib.mkDefault \"{}\"",
-            user_password_hash_target(&primary.name)
-        )
-    } else {
-        "lib.mkDefault null".to_string()
-    };
-    let groups_nix = |groups: &[String]| -> String {
-        groups
-            .iter()
-            .map(|g| format!("\"{g}\""))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-
-    let mut body = format!(
-        r#"{{
-  lib,
-  pkgs,
-  ...
-}}:
-
-{{
-  bresilla.user.name = lib.mkDefault "{name}";
-  bresilla.user.hashedPasswordFile = {hash};
-  bresilla.features.system.ssh.enable = lib.mkDefault {ssh};
-
-  # Primary account group membership chosen in the installer.
-  users.users."{name}".extraGroups = lib.mkForce [ {primary_groups} ];
-"#,
-        name = primary.name,
-        hash = hashed_password_file,
-        ssh = if state.allow_ssh { "true" } else { "false" },
-        primary_groups = groups_nix(&primary.groups),
-    );
-
-    // Additional accounts beyond the primary.
-    for user in users.iter().skip(1) {
-        let hashed = match &user.password_hash {
-            Some(_) => format!(
-                "\n    hashedPasswordFile = \"{}\";",
-                user_password_hash_target(&user.name)
-            ),
-            None => String::new(),
-        };
-        body.push_str(&format!(
-            r#"
-  users.users."{name}" = {{
-    isNormalUser = true;
-    shell = pkgs.zsh;
-    extraGroups = [ {groups} ];{hashed}
-  }};
-"#,
-            name = user.name,
-            groups = groups_nix(&user.groups),
-            hashed = hashed,
-        ));
-    }
-    body.push_str("}\n");
-
-    write_file(&repo.join("host/generated/user.nix"), &body)
-}
-
-fn write_file(file: &Path, content: &str) -> Result<()> {
-    if let Some(parent) = file.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-    }
-    fs::write(file, content).map_err(|err| format!("failed to write {}: {err}", file.display()))
-}
-
-fn generated_nix_files(repo: &Path) -> [PathBuf; 3] {
-    [
-        repo.join("host/generated/disko.nix"),
-        repo.join("host/generated/host.nix"),
-        repo.join("host/generated/user.nix"),
-    ]
-}
-
 fn validate_hostname(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 63 {
         return Err(format!("invalid hostname: {value}"));
@@ -701,57 +549,64 @@ mod tests {
         assert!(validate_username("bad.name").is_err());
     }
 
+    fn read_doc(dir: &std::path::Path) -> lis::Document {
+        let text = fs::read_to_string(dir.join("host/generated/system.lis.json")).unwrap();
+        lis::Document::from_json(&text).unwrap()
+    }
+
     #[test]
-    fn prepares_generated_files_that_parse_as_nix() {
+    fn prepares_only_the_lis_document() {
         let dir = temp_dir("generated");
         fs::create_dir_all(&dir).unwrap();
         prepare_generated(&dir, &InstallState::sample()).unwrap();
 
-        assert!(dir.join("host/generated/disko.nix").is_file());
-        assert!(dir.join("host/generated/host.nix").is_file());
-        assert!(dir.join("host/generated/user.nix").is_file());
-        assert!(dir.join("host/generated/storage-plan.json").is_file());
-        let user = fs::read_to_string(dir.join("host/generated/user.nix")).unwrap();
-        assert!(user.contains("bresilla.features.system.ssh.enable = lib.mkDefault true;"));
-        let storage_plan = fs::read_to_string(dir.join("host/generated/storage-plan.json")).unwrap();
-        let storage_plan = serde_json::from_str::<serde_json::Value>(&storage_plan).unwrap();
-        assert_eq!(storage_plan["storage_mode"], "joined-lvm");
-        assert_eq!(storage_plan["volume_groups"][0]["name"], "pool");
-        // The secrets decision is always explicit in the generated host.nix.
-        let host = fs::read_to_string(dir.join("host/generated/host.nix")).unwrap();
-        assert!(host.contains("bresilla.secrets.enable = true;"));
+        // ONE artifact: the LIS document. No nix is emitted by nox.
+        assert!(dir.join("host/generated/system.lis.json").is_file());
+        for legacy in ["disko.nix", "host.nix", "user.nix", "storage-plan.json"] {
+            assert!(!dir.join("host/generated").join(legacy).exists(), "{legacy} emitted");
+        }
+        let doc = read_doc(&dir);
+        assert!(lis::validate(&doc).is_empty());
+        let storage = doc.storage.as_ref().unwrap();
+        assert_eq!(storage.lvm[0].name, "pool");
+        // Untouched sample disk materialized into an explicit whole-disk slice.
+        assert!(!storage.partitions.is_empty());
+        // ssh choice travels in the document.
+        let ssh = doc.network.unwrap().ssh.unwrap();
+        assert_eq!(ssh.enabled, Some(true));
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn skipping_secrets_disables_them_in_generated_host_nix() {
+    fn skipping_secrets_is_recorded_in_the_document() {
         let dir = temp_dir("generated-no-secrets");
         fs::create_dir_all(&dir).unwrap();
         let mut state = InstallState::sample();
         state.secrets_mode = crate::install::state::SecretsMode::Skip;
         prepare_generated(&dir, &state).unwrap();
-        let host = fs::read_to_string(dir.join("host/generated/host.nix")).unwrap();
-        assert!(host.contains("bresilla.secrets.enable = false;"));
+        let doc = read_doc(&dir);
+        let x = doc.extensions.get("x-nixos").unwrap();
+        assert_eq!(x.get("secrets"), Some(&serde_json::json!(false)));
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn generated_user_file_sets_password_hash_file_when_password_present() {
+    fn document_carries_the_password_hash_when_present() {
         let dir = temp_dir("generated-password");
         fs::create_dir_all(&dir).unwrap();
         let mut state = InstallState::sample();
         state.users[0].password_hash = Some("$y$j9T$abc".to_string());
         prepare_generated(&dir, &state).unwrap();
-
-        let user = fs::read_to_string(dir.join("host/generated/user.nix")).unwrap();
-        assert!(user.contains(
-            "bresilla.user.hashedPasswordFile = lib.mkDefault \"/var/lib/nixos-install/passwd-bresilla.hash\";"
-        ));
+        let doc = read_doc(&dir);
+        assert_eq!(
+            doc.users[0].password.as_ref().unwrap().hash.as_deref(),
+            Some("$y$j9T$abc")
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn generated_user_file_renders_multiple_users_with_groups() {
+    fn document_carries_multiple_users_with_groups() {
         let dir = temp_dir("generated-multiuser");
         fs::create_dir_all(&dir).unwrap();
         let mut state = InstallState::sample();
@@ -770,40 +625,34 @@ mod tests {
             },
         ];
         prepare_generated(&dir, &state).unwrap();
-
-        let user = fs::read_to_string(dir.join("host/generated/user.nix")).unwrap();
-        // primary group override + password path
-        assert!(user.contains("users.users.\"bresilla\".extraGroups = lib.mkForce [ \"wheel\" \"corner\" ]"));
-        assert!(user.contains("passwd-bresilla.hash"));
-        // additional user with its own groups
-        assert!(user.contains("users.users.\"guest\" = {"));
-        assert!(user.contains("extraGroups = [ \"networkmanager\" ]"));
-        // guest has no password → no hashedPasswordFile line for guest
-        assert!(!user.contains("passwd-guest.hash"));
+        let doc = read_doc(&dir);
+        assert_eq!(doc.users.len(), 2);
+        assert_eq!(doc.users[0].groups, vec!["wheel", "corner"]);
+        assert_eq!(doc.users[1].name, "guest");
+        assert_eq!(doc.users[1].groups, vec!["networkmanager"]);
+        assert!(doc.users[1].password.is_none());
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn generated_user_file_leaves_password_null_by_default() {
+    fn document_leaves_password_absent_by_default() {
         let dir = temp_dir("generated-nopass");
         fs::create_dir_all(&dir).unwrap();
         prepare_generated(&dir, &InstallState::sample()).unwrap();
-
-        let user = fs::read_to_string(dir.join("host/generated/user.nix")).unwrap();
-        assert!(user.contains("bresilla.user.hashedPasswordFile = lib.mkDefault null;"));
+        let doc = read_doc(&dir);
+        assert!(doc.users[0].password.is_none());
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn generated_user_file_can_leave_ssh_disabled() {
+    fn document_records_ssh_disabled() {
         let dir = temp_dir("generated-no-ssh");
         fs::create_dir_all(&dir).unwrap();
         let mut state = InstallState::sample();
         state.allow_ssh = false;
         prepare_generated(&dir, &state).unwrap();
-
-        let user = fs::read_to_string(dir.join("host/generated/user.nix")).unwrap();
-        assert!(user.contains("bresilla.features.system.ssh.enable = lib.mkDefault false;"));
+        let doc = read_doc(&dir);
+        assert_eq!(doc.network.unwrap().ssh.unwrap().enabled, Some(false));
         fs::remove_dir_all(dir).unwrap();
     }
 

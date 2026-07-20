@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use serde_json::Value;
@@ -24,15 +23,14 @@ pub fn apply(repo: &Path, dry_run: bool) -> Result<u8> {
 }
 
 fn load_plan(repo: &Path) -> Result<Value> {
-    let file = repo.join("host/generated/storage-plan.json");
-    let raw = fs::read_to_string(&file).map_err(|err| {
-        format!(
-            "failed to read {}: {err}; generate the installer storage plan first",
-            file.display()
-        )
-    })?;
+    // The repo holds ONE generated artifact: the LIS document. The storage
+    // plan is derived from it on the fly.
+    let doc = crate::install::lis::read(&crate::install::lis::document_path(repo))
+        .map_err(|err| format!("{err}; run the installer wizard first"))?;
+    let state = crate::install::lis::state_from(&doc);
+    let raw = crate::install::storage_plan::render(&state)?;
     serde_json::from_str::<Value>(&raw)
-        .map_err(|err| format!("failed to parse {}: {err}", file.display()))
+        .map_err(|err| format!("failed to parse derived storage plan: {err}"))
 }
 
 pub fn format_plan(plan: &Value) -> Result<String> {
@@ -246,10 +244,10 @@ fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use super::{apply, format_apply_dry_run, format_plan};
     use serde_json::json;
-    use std::fs;
-
+    
     #[test]
     fn formats_generated_storage_plan_for_terminal() {
         let plan = json!({

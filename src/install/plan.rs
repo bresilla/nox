@@ -272,7 +272,8 @@ fn remote_paths(state: &InstallState, source_dir: &str) -> Result<RemotePaths> {
         source_dir: source_dir.to_string(),
         role,
         flake_file: format!("{source_dir}/host/flake.nix"),
-        disko_file: format!("{source_dir}/host/generated/disko.nix"),
+        // Committed translator file that reads generated/system.lis.json.
+        disko_file: format!("{source_dir}/host/lis/disko.nix"),
         flake_ref: format!("{source_dir}/host#{flake_host}"),
     })
 }

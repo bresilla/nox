@@ -31,6 +31,7 @@ pub struct StorageDisk {
     pub slices: Vec<DiskSlice>,
 }
 
+#[allow(unused_imports)]
 pub use crate::install::state::DiskRole as StorageDiskRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

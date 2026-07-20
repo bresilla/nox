@@ -1,5 +1,5 @@
-use std::fs;
-use std::path::Path;
+
+
 
 use serde::Serialize;
 
@@ -75,15 +75,6 @@ pub fn render(state: &InstallState) -> Result<String> {
         .map_err(|err| format!("failed to render storage plan JSON: {err}"))
 }
 
-pub fn write(repo: &Path, state: &InstallState) -> Result<()> {
-    let file = repo.join("host/generated/storage-plan.json");
-    let content = render(state)?;
-    if let Some(parent) = file.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-    }
-    fs::write(&file, content).map_err(|err| format!("failed to write {}: {err}", file.display()))
-}
 
 impl StoragePlan {
     fn from_state_and_layout(state: &InstallState, layout: &StorageLayout) -> Self {
