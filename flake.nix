@@ -1,77 +1,47 @@
 {
-  description = "nox Rust development shell";
+  description = "nox — declarative Linux installer TUI (produces LIS, applies NixOS)";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
-    nixgl.url = "github:nix-community/nixGL";
+    disko.url = "github:nix-community/disko";
+    disko.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
-    { nixpkgs, flake-utils, nixgl, ... }:
+    { nixpkgs, flake-utils, disko, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [
-          (final: prev: {
-            xorg = prev.xorg // {
-              libX11 = final.libx11;
-              libxcb = final.libxcb;
-              libxshmfence = final.libxshmfence;
-            };
-          })
-        ];
+        pkgs = import nixpkgs { inherit system; };
 
-        pkgs = import nixpkgs {
-          inherit system overlays;
-          config = {
-            allowUnfree = true;
-            nvidia.acceptLicense = true;
-          };
+        nox = pkgs.callPackage ./package.nix {
+          disko = disko.packages.${system}.disko;
         };
 
-        nvidiaVersion = builtins.getEnv "NVIDIA_VERSION";
-        hasNvidia = nvidiaVersion != "";
-
-        nixglPkgs = import "${nixgl}/default.nix" ({
-          inherit pkgs;
-        } // pkgs.lib.optionalAttrs hasNvidia {
-          inherit nvidiaVersion;
-          nvidiaHash = null;
-        });
-
-        nixGLTarget =
-          if hasNvidia
-          then "${nixglPkgs.nixGLNvidia}/bin/nixGLNvidia-${nvidiaVersion}"
-          else "${nixglPkgs.nixGLIntel}/bin/nixGLIntel";
-        nixVulkanTarget =
-          if hasNvidia
-          then "${nixglPkgs.nixVulkanNvidia}/bin/nixVulkanNvidia-${nvidiaVersion}"
-          else "${nixglPkgs.nixVulkanIntel}/bin/nixVulkanIntel";
-
-        nixGLAlias = pkgs.runCommand "nixGL" { } ''
-          mkdir -p $out/bin
-          ln -s ${nixGLTarget} $out/bin/nixGL
-        '';
-        nixVulkanAlias = pkgs.runCommand "nixVulkan" { } ''
-          mkdir -p $out/bin
-          ln -s ${nixVulkanTarget} $out/bin/nixVulkan
-        '';
-
-        guiLibs = with pkgs; [
-          alsa-lib
-          udev
-          vulkan-loader
-          libxkbcommon
-          wayland
-          libx11
-          libxcursor
-          libxi
-          libxrandr
-        ];
+        # Fully static, self-contained binary for releases: pcsclite linked
+        # statically, no disko wrapper (single portable file). The static
+        # pcsclite build fails to populate its doc/man outputs, so drop them.
+        nox-static = pkgs.pkgsStatic.callPackage ./package.nix {
+          wrapDisko = false;
+          pcsclite = pkgs.pkgsStatic.pcsclite.overrideAttrs (old: {
+            outputs = builtins.filter (o: o != "doc" && o != "man") old.outputs;
+          });
+        };
       in
       {
+        packages = {
+          inherit nox nox-static;
+          default = nox;
+        };
+
         devShells.default = pkgs.mkShell {
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.cmake
+          ];
+          buildInputs = [ pkgs.pcsclite ];
+
           packages = [
             pkgs.rustc
             pkgs.cargo
@@ -79,22 +49,10 @@
             pkgs.clippy
             pkgs.rust-analyzer
             pkgs.git-cliff
-            pkgs.clang
-            pkgs.mold
-            pkgs.pkg-config
+          ];
 
-            nixGLAlias
-            nixVulkanAlias
-            nixglPkgs.nixGLIntel
-            nixglPkgs.nixVulkanIntel
-          ] ++ pkgs.lib.optionals hasNvidia [
-            nixglPkgs.nixGLNvidia
-            nixglPkgs.nixVulkanNvidia
-          ] ++ guiLibs;
-
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
-          WGPU_VALIDATION = "0";
-          WGPU_DEBUG = "0";
+          # So `cargo run` finds libpcsclite.so at runtime outside a nix build.
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.pcsclite ];
         };
       }
     );

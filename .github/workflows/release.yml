@@ -9,29 +9,16 @@ permissions:
 
 jobs:
   release:
-    name: release ${{ matrix.artifact }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: "nox-linux-amd64"
-          - os: ubuntu-24.04-arm
-            artifact: "nox-linux-arm64"
-          - os: macos-15-intel
-            artifact: "nox-macos-amd64"
-          - os: macos-14
-            artifact: "nox-macos-arm64"
+    name: release nox-linux-amd64 (static)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release --example main
-      - name: Package
-        run: tar -czf "${{ matrix.artifact }}.tar.gz" "target/release/examples/main"
-      - name: Upload artifact
+      - uses: cachix/install-nix-action@v27
+      - name: Build static binary
+        run: |
+          nix build .#nox-static --print-out-paths
+          cp result/bin/nox nox-linux-amd64
+      - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact }}.tar.gz
-
+          files: nox-linux-amd64

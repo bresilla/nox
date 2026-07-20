@@ -16,6 +16,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Native dependencies (pcsclite for the yubikey crate)
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev pkg-config cmake
       - uses: actions/cache@v4
         with:
           path: |
@@ -26,5 +28,5 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-
       - name: Verify
-        run: make verify
+        run: cargo test
 

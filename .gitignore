@@ -23,3 +23,8 @@ __pycache__/
 compile_commands.json
 .complog
 .quickfix
+target/
+
+# The global gitignore excludes "install"; this crate has src/install/.
+!install/
+!src/install/**

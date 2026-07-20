@@ -1,26 +1,25 @@
 SHELL := /bin/bash
 
-PROJECT_NAME := $(shell if [ -f PROJECT ]; then sed -n '/^[[:space:]]*[^#\[[:space:]]/p' PROJECT | head -1 | tr -d '[:space:]'; else sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1; fi)
-PROJECT_VERSION := $(shell if [ -f PROJECT ]; then sed -n '/^[[:space:]]*[^#\[[:space:]]/p' PROJECT | sed -n '2p' | tr -d '[:space:]'; else sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1; fi)
+PROJECT_NAME := $(shell sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+PROJECT_VERSION := $(shell sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 ifeq ($(PROJECT_NAME),)
-    $(error Error: PROJECT file not found or invalid)
+    $(error Error: Cargo.toml not found or invalid)
 endif
 
 TOP_DIR := $(CURDIR)
 CARGO := cargo
-EXAMPLE ?= main
 PREFIX ?= $(HOME)/.local
-
-HAS_REL := $(shell command -v git-rel 2>/dev/null)
+# Args passed to the binary by `make run`, e.g. `make run ARGS="facts"`.
+ARGS ?= install-preview
 
 $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r test t check check-all test-all clippy rustdoc fmt fmt-check clean verify release help h
+.PHONY: build b compile c run r test t check check-all test-all clippy rustdoc fmt fmt-check clean verify install help h
 
 build:
-	@$(CARGO) build --lib
+	@$(CARGO) build
 
 b: build
 
@@ -31,7 +30,7 @@ compile:
 c: compile
 
 run:
-	@$(CARGO) run --example $(EXAMPLE)
+	@$(CARGO) run --bin $(PROJECT_NAME) -- $(ARGS)
 
 r: run
 
@@ -64,27 +63,22 @@ test-all:
 clean:
 	@$(CARGO) clean
 
-verify: fmt-check check test check-all test-all clippy rustdoc
+verify: fmt-check check test clippy
 
-release:
-	@if [ -z "$(HAS_REL)" ]; then \
-		echo "git-rel is not installed. Please install it first."; \
-		exit 1; \
-	fi
-	@if [ -z "$(TYPE)" ]; then \
-		echo "Release type not specified. Use 'make release TYPE=[patch|minor|major|M.m.p]'"; \
-		exit 1; \
-	fi
-	@git rel $(TYPE)
+# Build a release binary and drop it on PATH (matches the manual dev workflow).
+install:
+	@$(CARGO) build --release
+	@install -Dm755 target/release/$(PROJECT_NAME) $(PREFIX)/bin/$(PROJECT_NAME)
+	@echo "installed $(PROJECT_NAME) -> $(PREFIX)/bin/$(PROJECT_NAME)"
 
 help:
 	@echo
 	@echo "Usage: make [target]"
 	@echo
 	@echo "Available targets:"
-	@echo "  build        Build the library"
+	@echo "  build        Build the binary (debug)"
 	@echo "  compile      Clean and rebuild"
-	@echo "  run          Run a development example"
+	@echo "  run          Run the binary (ARGS=\"$(ARGS)\" by default)"
 	@echo "  test         Run all tests"
 	@echo "  check        Run cargo check on all targets"
 	@echo "  check-all    Run cargo check on all targets/all features"
@@ -94,9 +88,8 @@ help:
 	@echo "  fmt          Format the workspace"
 	@echo "  fmt-check    Check formatting"
 	@echo "  clean        Remove Cargo build artifacts"
-	@echo "  verify       Run the full local gate"
-	@echo "  release      Release a new version"
+	@echo "  verify       Run the local gate (fmt-check, check, test, clippy)"
+	@echo "  install      Build release + install to \$$PREFIX/bin ($(PREFIX)/bin)"
 	@echo
 
 h: help
-
